@@ -1,0 +1,2489 @@
+/**
+ * 月班表線上管理系統
+ * - 資料以 XML 格式備份/還原
+ * - 使用 window.storage 做跨 session 持久化
+ * - 支援桌機與手機版
+ * - 預載入 115年5月（西元2026年）班表（由 PDF 轉入）
+ */
+import { useState, useEffect, useCallback } from "react";
+
+// ═══════════════════════════════════════
+// 一、常數定義
+// ═══════════════════════════════════════
+
+/** 星期名稱（0=日...6=六） */
+const WEEKDAY = ["日", "一", "二", "三", "四", "五", "六"];
+
+/** 民國年換算基數：西元年 - 1911 = 民國年 */
+const ROC_OFFSET = 1911;
+
+/** 預設班別設定（醫療慣例顏色） */
+const DEFAULT_SHIFT_DEFS = [
+  { code: "D",   name: "白班", fg: "#1e3a5f", bg: "#90CAF9" },
+  { code: "E",   name: "小夜", fg: "#7c2d12", bg: "#FED7AA" },
+  { code: "N",   name: "大夜", fg: "#ffffff", bg: "#3949AB" },
+  { code: "OFF", name: "例休", fg: "#6b7280", bg: "#E5E7EB" },
+  { code: "S",   name: "特休", fg: "#065f46", bg: "#D1FAE5" },
+];
+
+/** 預設員工資料（由 RCW-115年5月病房助理班表 PDF 轉入） */
+const DEFAULT_EMPLOYEES = [
+  { id: "N0935", name: "陳志偉", email: "",                    license: "丙照",       startDate: "" },
+  { id: "N0960", name: "吳玉柱", email: "achir1015@gmail.com", license: "照顧服務員", startDate: "2012-08-19" },
+  { id: "N1512", name: "王詩捷", email: "",                    license: "丙照",       startDate: "" },
+  { id: "N1564", name: "蔣可薇", email: "",                    license: "丙照",       startDate: "" },
+  { id: "N1642", name: "梁桂清", email: "",                    license: "丙照",       startDate: "" },
+  { id: "N1764", name: "李漢銓", email: "",                    license: "",           startDate: "" },
+  { id: "N1042", name: "徐韶璟", email: "",                    license: "丙照",       startDate: "" },
+  { id: "N1616", name: "李忠坪", email: "",                    license: "丙照",       startDate: "" },
+  { id: "N1918", name: "潘全偉", email: "",                    license: "",           startDate: "" },
+  { id: "N1919", name: "黃俊騰", email: "",                    license: "",           startDate: "" },
+];
+
+/**
+ * 115年4月班表（西元2026年4月），由 PDF 轉入
+ * 格式：每個字串為 4/1 ~ 4/30 共 30 天的班別，以逗號分隔
+ * 特殊說明：E/學=學習小夜→E、N/學=學習大夜→N
+ */
+const PDF_SCHEDULE_2026_4 = {
+  N0935: "D,D,D,OFF,D,D,E,OFF,D,D,OFF,D,D,OFF,OFF,E,E,E,OFF,OFF,OFF,D,D,D,D,OFF,OFF,D,D,D",
+  N0960: "N,OFF,N,N,N,OFF,N,N,OFF,N,N,OFF,OFF,N,OFF,E,N,N,N,N,OFF,N,N,N,N,OFF,N,N,OFF,OFF",
+  N1512: "E,E,E,N,OFF,E,E,E,E,OFF,OFF,E,E,N,N,N,OFF,OFF,OFF,N,N,N,OFF,OFF,N,N,OFF,OFF,D,D",
+  N1564: "N,N,OFF,OFF,N,N,OFF,OFF,N,N,OFF,N,N,OFF,N,N,N,N,N,OFF,N,OFF,N,N,OFF,N,N,OFF,N,N",
+  N1642: "E,E,OFF,E,E,E,OFF,N,N,OFF,N,N,N,OFF,OFF,OFF,E,E,E,E,E,E,OFF,OFF,OFF,OFF,E,E,E,E",
+  N1764: "OFF,OFF,E,E,E,OFF,OFF,E,E,E,E,OFF,E,E,E,OFF,D,D,OFF,OFF,D,D,OFF,E,E,E,OFF,E,E,E",
+  N1042: "OFF,N,N,OFF,OFF,D,D,D,D,OFF,D,D,D,D,D,OFF,OFF,OFF,OFF,E,E,OFF,E,E,E,E,OFF,N,N,N",
+  N1616: "OFF,D,D,D,OFF,OFF,D,D,D,E,OFF,OFF,OFF,E,E,OFF,D,D,D,D,OFF,E,E,OFF,D,D,D,D,D,OFF",
+  N1918: "D,D,OFF,D,D,OFF,D,D,OFF,D,OFF,OFF,D,D,D,D,OFF,OFF,D,D,D,OFF,D,D,E,E,E,OFF,OFF,D",
+  N1919: "D,OFF,N,N,N,N,N,OFF,OFF,D,D,OFF,OFF,D,D,D,D,OFF,OFF,D,D,D,D,D,OFF,D,D,D,OFF,OFF",
+};
+
+/**
+ * 115年5月班表（西元2026年5月），由 PDF 轉入
+ * 格式：每個字串為 5/1 ~ 5/31 共 31 天的班別，以逗號分隔
+ * 特殊說明：E/學 = 學習小夜，統一記錄為 E
+ */
+const PDF_SCHEDULE_2026_5 = {
+  N0935: "OFF,D,D,D,OFF,D,D,D,OFF,D,D,D,D,OFF,E,E,E,E,OFF,OFF,D,D,OFF,D,D,OFF,D,D,D,OFF,OFF",
+  N0960: "N,N,OFF,N,N,N,OFF,D,OFF,N,N,N,N,OFF,OFF,OFF,N,N,N,N,N,OFF,OFF,N,N,N,N,OFF,N,N,OFF",
+  N1512: "E,E,OFF,OFF,OFF,OFF,E,E,E,E,E,OFF,E,E,E,E,E,OFF,N,N,N,N,N,OFF,OFF,E,E,E,OFF,OFF,E",
+  N1564: "N,N,OFF,D,OFF,N,N,N,N,N,N,OFF,OFF,OFF,OFF,OFF,OFF,OFF,OFF,OFF,N,N,N,N,N,OFF,N,N,N,N,-",
+  N1642: "E,OFF,E,E,E,E,E,OFF,OFF,E,OFF,E,E,E,OFF,N,N,N,OFF,OFF,E,E,OFF,E,E,OFF,D,E,E,E,OFF",
+  N1764: "OFF,E,N,N,OFF,E,OFF,E,E,OFF,E,E,OFF,N,N,N,OFF,OFF,E,E,E,E,E,OFF,OFF,E,E,OFF,E,E,E",
+  N1042: "OFF,OFF,D,D,D,D,D,OFF,D,D,OFF,OFF,D,D,D,D,OFF,D,D,D,D,OFF,D,OFF,D,D,N,N,OFF,OFF,D",
+  N1616: "D,D,OFF,E,E,OFF,OFF,D,D,OFF,D,D,D,OFF,D,D,D,D,OFF,OFF,OFF,D,D,D,OFF,D,D,D,D,OFF,OFF",
+  N1918: "D,OFF,OFF,D,D,D,D,D,OFF,OFF,D,D,OFF,D,D,OFF,D,E,E,E,OFF,OFF,E,E,E,OFF,OFF,D,D,D,D",
+  N1919: "E,E,E,OFF,N,N,N,N,N,OFF,OFF,OFF,N,N,N,OFF,OFF,D,D,D,D,D,OFF,OFF,D,D,OFF,OFF,D,D,N",
+};
+
+// ═══════════════════════════════════════
+// 二、工具函數
+// ═══════════════════════════════════════
+
+/** 取得某年月的天數 */
+const daysInMonth = (y, m) => new Date(y, m, 0).getDate();
+
+/** 西元年 → 民國年 */
+const toROC = (y) => y - ROC_OFFSET;
+
+/** 產生月份資料 key，例如 "2026-5" */
+const monthKey = (y, m) => `${y}-${m}`;
+
+/**
+ * 將單一月份的 PDF 班表字串轉換為資料結構
+ * @param {number} year  西元年
+ * @param {number} month 月份
+ * @param {object} pdfData 格式：{ 員工id: "D,OFF,N,..." }
+ */
+function buildMonthMap(year, month, pdfData) {
+  const days = daysInMonth(year, month);
+  const empMap = {};
+  DEFAULT_EMPLOYEES.forEach((emp) => {
+    const raw = pdfData[emp.id];
+    if (raw) {
+      const arr = raw.split(",");
+      while (arr.length < days) arr.push("-");
+      empMap[emp.id] = arr.slice(0, days);
+    } else {
+      empMap[emp.id] = Array(days).fill("-");
+    }
+  });
+  return empMap;
+}
+
+/**
+ * 建立初始班表資料（同時載入 4月與5月，均由 PDF 轉入）
+ * 資料結構：{ "2026-4": {...}, "2026-5": {...} }
+ */
+function buildInitialSchedule() {
+  return {
+    [monthKey(2026, 4)]: buildMonthMap(2026, 4, PDF_SCHEDULE_2026_4),
+    [monthKey(2026, 5)]: buildMonthMap(2026, 5, PDF_SCHEDULE_2026_5),
+  };
+}
+
+// ═══════════════════════════════════════
+// 三、XML 序列化 / 解析
+// ═══════════════════════════════════════
+
+/**
+ * 將系統資料序列化為 XML 字串
+ * @param {{ employees, shiftDefs, schedules }} data
+ */
+function serializeToXml({ employees, shiftDefs, schedules }) {
+  // XML 特殊字元逸出
+  const esc = (s) =>
+    String(s || "")
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+
+  const lines = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<scheduleSystem>',
+    '  <employees>',
+  ];
+  employees.forEach((e) =>
+    lines.push(
+      `    <employee id="${esc(e.id)}" name="${esc(e.name)}" ` +
+        `email="${esc(e.email)}" license="${esc(e.license)}" startDate="${esc(e.startDate)}"/>`
+    )
+  );
+  lines.push("  </employees>", "  <shiftTypes>");
+  shiftDefs.forEach((s) =>
+    lines.push(
+      `    <shiftType code="${esc(s.code)}" name="${esc(s.name)}" ` +
+        `fg="${esc(s.fg)}" bg="${esc(s.bg)}"/>`
+    )
+  );
+  lines.push("  </shiftTypes>", "  <schedules>");
+  Object.entries(schedules).forEach(([key, empMap]) => {
+    const [y, m] = key.split("-");
+    lines.push(`    <schedule year="${y}" month="${m}">`);
+    Object.entries(empMap).forEach(([empId, shifts]) => {
+      shifts.forEach((sh, i) => {
+        if (sh && sh !== "-")
+          lines.push(
+            `      <entry empId="${esc(empId)}" day="${i + 1}" shift="${esc(sh)}"/>`
+          );
+      });
+    });
+    lines.push("    </schedule>");
+  });
+  lines.push("  </schedules>", "</scheduleSystem>");
+  return lines.join("\n");
+}
+
+/**
+ * 從 XML 字串解析出系統資料
+ * @param {string} xmlStr
+ * @returns {{ employees, shiftDefs, schedules }}
+ */
+function parseFromXml(xmlStr) {
+  const doc = new DOMParser().parseFromString(xmlStr, "text/xml");
+  if (doc.querySelector("parsererror")) throw new Error("XML 格式錯誤");
+
+  const employees = [...doc.querySelectorAll("employee")].map((el) => ({
+    id: el.getAttribute("id") || "",
+    name: el.getAttribute("name") || "",
+    email: el.getAttribute("email") || "",
+    license: el.getAttribute("license") || "",
+    startDate: el.getAttribute("startDate") || "",
+  }));
+
+  const shiftDefs = [...doc.querySelectorAll("shiftType")].map((el) => ({
+    code: el.getAttribute("code") || "",
+    name: el.getAttribute("name") || "",
+    fg: el.getAttribute("fg") || "#333",
+    bg: el.getAttribute("bg") || "#eee",
+  }));
+
+  const schedules = {};
+  [...doc.querySelectorAll("schedule")].forEach((sch) => {
+    const y = sch.getAttribute("year");
+    const m = sch.getAttribute("month");
+    const key = `${y}-${m}`;
+    const days = daysInMonth(+y, +m);
+    schedules[key] = {};
+    // 先為每個員工建立空陣列
+    employees.forEach((e) => {
+      schedules[key][e.id] = Array(days).fill("-");
+    });
+    // 再填入 XML 內的班別記錄
+    [...sch.querySelectorAll("entry")].forEach((en) => {
+      const id = en.getAttribute("empId");
+      const day = +en.getAttribute("day") - 1; // 轉為 0-based index
+      const sh = en.getAttribute("shift");
+      if (schedules[key][id] && day >= 0) schedules[key][id][day] = sh;
+    });
+  });
+
+  return { employees, shiftDefs, schedules };
+}
+
+// ═══════════════════════════════════════
+// 四、共用樣式函數
+// ═══════════════════════════════════════
+
+/** 按鈕樣式 */
+const btn = (bg, fg = "#fff") => ({
+  padding: "7px 14px",
+  background: bg,
+  color: fg,
+  border: "none",
+  borderRadius: 6,
+  cursor: "pointer",
+  fontSize: 13,
+  fontWeight: 500,
+  fontFamily: "inherit",
+});
+
+/** 文字輸入框樣式 */
+const inp = (disabled = false) => ({
+  width: "100%",
+  padding: "7px 10px",
+  borderRadius: 6,
+  border: "1px solid #d1d5db",
+  fontSize: 13,
+  boxSizing: "border-box",
+  background: disabled ? "#f9fafb" : "#fff",
+  color: "#1f2937",
+  fontFamily: "inherit",
+});
+
+/** 標籤樣式 */
+const lbl = {
+  display: "block",
+  fontSize: 12,
+  color: "#6b7280",
+  marginBottom: 4,
+  fontWeight: 500,
+};
+
+/** 卡片樣式 */
+const card = {
+  background: "#fff",
+  borderRadius: 12,
+  padding: 20,
+  border: "1px solid #e5e7eb",
+  boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
+};
+
+/** 訊息框樣式 */
+const msg = (ok) => ({
+  marginTop: 12,
+  padding: "8px 14px",
+  borderRadius: 6,
+  fontSize: 13,
+  background: ok ? "#f0fdf4" : "#fef2f2",
+  color: ok ? "#15803d" : "#b91c1c",
+  border: `1px solid ${ok ? "#bbf7d0" : "#fecaca"}`,
+});
+
+// ═══════════════════════════════════════
+// 五、班表頁籤元件
+// ═══════════════════════════════════════
+
+/**
+ * ScheduleTab：橫向班表表格
+ * - 列 = 員工
+ * - 欄 = 日期（1~31）
+ * - 點擊格子 → 展開班別選擇列
+ */
+function ScheduleTab({ employees, shiftDefs, schedule, year, month, onUpdate }) {
+  // 目前正在編輯的儲存格 { empId, dayIdx }
+  const [editing, setEditing] = useState(null);
+
+  const days = daysInMonth(year, month);
+  const dayArr = Array.from({ length: days }, (_, i) => i); // [0,1,...,30]
+
+  /** 查找班別定義，找不到時回傳預設 */
+  const findSt = (code) =>
+    shiftDefs.find((s) => s.code === code) || {
+      code,
+      fg: "#9ca3af",
+      bg: "#f3f4f6",
+      name: code,
+    };
+
+  /** 計算某一天每種班別的人數 */
+  const dayStat = (di) => {
+    const c = {};
+    shiftDefs.forEach((s) => {
+      c[s.code] = 0;
+    });
+    employees.forEach((e) => {
+      const sh = (schedule[e.id] || [])[di] || "-";
+      if (c[sh] !== undefined) c[sh]++;
+    });
+    return c;
+  };
+
+  return (
+    <div style={card}>
+      {/* ── 班別圖例 + 操作說明 ── */}
+      <div style={{ marginBottom: 12 }}>
+        {/* 班別色碼說明 */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8, alignItems: "center" }}>
+          <span style={{ fontSize: 12, color: "#6b7280", marginRight: 2 }}>班別：</span>
+          {shiftDefs.map((s) => (
+            <span key={s.code} style={{
+              padding: "2px 10px", borderRadius: 4, fontSize: 12, fontWeight: 500,
+              color: s.fg, background: s.bg,
+            }}>
+              {s.code}　{s.name}
+            </span>
+          ))}
+        </div>
+        {/* 操作說明提示列 */}
+        <div style={{
+          display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+          background: "#eff6ff", border: "1px solid #bfdbfe",
+          borderRadius: 6, padding: "6px 12px",
+        }}>
+          <span style={{ fontSize: 12, color: "#1d4ed8" }}>
+            ✏️ <strong>如何修改班別：</strong>
+          </span>
+          <span style={{ fontSize: 12, color: "#1d4ed8" }}>
+            點擊任意<strong>班別格子</strong>
+          </span>
+          <span style={{ fontSize: 12, color: "#6b7280" }}>→</span>
+          <span style={{ fontSize: 12, color: "#1d4ed8" }}>
+            該員工列下方展開<strong>班別選單</strong>
+          </span>
+          <span style={{ fontSize: 12, color: "#6b7280" }}>→</span>
+          <span style={{ fontSize: 12, color: "#1d4ed8" }}>
+            點選新班別或「清除」
+          </span>
+          {editing && (
+            <span style={{
+              marginLeft: "auto", padding: "2px 10px",
+              background: "#dbeafe", borderRadius: 4,
+              fontSize: 12, color: "#1e40af", fontWeight: 500,
+            }}>
+              編輯中：{employees.find(e=>e.id===editing.empId)?.name} 第{editing.dayIdx+1}日
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* ── 班表表格（橫向捲動） ── */}
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ borderCollapse: "collapse", fontSize: 12 }}>
+          {/* 欄寬設定 */}
+          <colgroup>
+            <col style={{ minWidth: 108 }} />
+            {dayArr.map((di) => (
+              <col key={di} style={{ width: 30 }} />
+            ))}
+            <col style={{ minWidth: 70 }} />
+          </colgroup>
+
+          {/* ── 標頭列 ── */}
+          <thead>
+            <tr>
+              {/* 員工欄標頭（sticky 固定） */}
+              <th
+                style={{
+                  padding: "6px 10px",
+                  textAlign: "left",
+                  background: "#1b6ca8",
+                  color: "#fff",
+                  position: "sticky",
+                  left: 0,
+                  zIndex: 2,
+                  fontSize: 12,
+                  borderRadius: "6px 0 0 0",
+                }}
+              >
+                員工
+              </th>
+              {/* 日期標頭 */}
+              {dayArr.map((di) => {
+                const d = di + 1;
+                const dow = new Date(year, month - 1, d).getDay();
+                // 日=紅、六=藍、平日=深藍
+                const bg =
+                  dow === 0 ? "#b91c1c" : dow === 6 ? "#1d4ed8" : "#1b6ca8";
+                return (
+                  <th
+                    key={di}
+                    style={{
+                      padding: "2px 1px",
+                      textAlign: "center",
+                      background: bg,
+                      color: "#fff",
+                      fontSize: 10,
+                    }}
+                  >
+                    <div style={{ fontWeight: 500 }}>{d}</div>
+                    <div style={{ opacity: 0.8 }}>{WEEKDAY[dow]}</div>
+                  </th>
+                );
+              })}
+              {/* 統計欄標頭 */}
+              <th
+                style={{
+                  padding: "6px 4px",
+                  background: "#1b6ca8",
+                  color: "#fff",
+                  textAlign: "center",
+                  fontSize: 11,
+                  borderRadius: "0 6px 0 0",
+                }}
+              >
+                統計
+              </th>
+            </tr>
+          </thead>
+
+          {/* ── 資料列 ── */}
+          <tbody>
+            {employees.flatMap((emp, ri) => {
+              const empShifts = schedule[emp.id] || Array(days).fill("-");
+              // 計算本月白班/小夜/大夜次數
+              const cnt = { D: 0, E: 0, N: 0 };
+              empShifts.forEach((s) => {
+                if (cnt[s] !== undefined) cnt[s]++;
+              });
+              const rowBg = ri % 2 === 0 ? "#fff" : "#f9fafb";
+              const rows = [];
+
+              // ── 員工班表列 ──
+              rows.push(
+                <tr key={emp.id} style={{ background: rowBg }}>
+                  {/* 員工名稱欄（sticky 固定） */}
+                  <td
+                    style={{
+                      padding: "4px 10px",
+                      position: "sticky",
+                      left: 0,
+                      zIndex: 1,
+                      background: rowBg,
+                      borderRight: "1px solid #e5e7eb",
+                    }}
+                  >
+                    <div style={{ fontWeight: 500, color: "#1f2937", fontSize: 13 }}>
+                      {emp.name}
+                    </div>
+                    <div style={{ fontSize: 10, color: "#9ca3af" }}>{emp.id}</div>
+                  </td>
+
+                  {/* 班別格子 */}
+                  {dayArr.map((di) => {
+                    const sh = empShifts[di] || "-";
+                    const st = findSt(sh);
+                    const active =
+                      editing?.empId === emp.id && editing?.dayIdx === di;
+                    const dow = new Date(year, month - 1, di + 1).getDay();
+                    // 週末背景微黃
+                    const wkBg =
+                      dow === 0 || dow === 6
+                        ? ri % 2 === 0
+                          ? "#fffbeb"
+                          : "#fef9e7"
+                        : undefined;
+                    return (
+                      <td
+                        key={di}
+                        style={{
+                          padding: 2,
+                          textAlign: "center",
+                          background: active ? "#dbeafe" : wkBg,
+                        }}
+                      >
+                        <button
+                          title={`點擊修改班別\n員工：${emp.name}\n日期：${month}/${di+1}\n目前：${sh === "-" ? "（無）" : sh}`}
+                          onClick={() =>
+                            setEditing(
+                              active ? null : { empId: emp.id, dayIdx: di }
+                            )
+                          }
+                          style={{
+                            width: 28, height: 24, borderRadius: 3,
+                            border: active ? "2px solid #1b6ca8" : "1px solid transparent",
+                            background: active ? "#dbeafe" : sh === "-" ? "#f9fafb" : st.bg,
+                            color: sh === "-" ? "#d1d5db" : st.fg,
+                            fontSize: 9, fontWeight: 700,
+                            cursor: "pointer", fontFamily: "inherit",
+                          }}
+                        >
+                          {sh === "-" ? "·" : sh}
+                        </button>
+                      </td>
+                    );
+                  })}
+
+                  {/* 出勤統計欄 */}
+                  <td
+                    style={{
+                      padding: "2px 4px",
+                      textAlign: "center",
+                      fontSize: 10,
+                      lineHeight: 1.6,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    <span style={{ color: "#1d4ed8" }}>白{cnt.D}</span>{" "}
+                    <span style={{ color: "#c2410c" }}>夜{cnt.E}</span>{" "}
+                    <span style={{ color: "#4338ca" }}>大{cnt.N}</span>
+                  </td>
+                </tr>
+              );
+
+              // ── 班別選擇展開列（只在選中員工時顯示） ──
+              if (editing?.empId === emp.id) {
+                rows.push(
+                  <tr key={`pick-${emp.id}`}>
+                    <td
+                      colSpan={days + 2}
+                      style={{
+                        padding: "8px 12px",
+                        background: "#eff6ff",
+                        borderTop: "1px solid #bfdbfe",
+                        borderBottom: "1px solid #bfdbfe",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          flexWrap: "wrap",
+                          gap: 6,
+                        }}
+                      >
+                        {/* 提示文字 */}
+                        <span
+                          style={{
+                            fontSize: 12,
+                            color: "#1d4ed8",
+                            fontWeight: 500,
+                            marginRight: 4,
+                          }}
+                        >
+                          {emp.name}・{month}/{editing.dayIdx + 1}：
+                        </span>
+                        {/* 班別選擇按鈕 */}
+                        {shiftDefs.map((st) => (
+                          <button
+                            key={st.code}
+                            onClick={() => {
+                              onUpdate(emp.id, editing.dayIdx, st.code);
+                              setEditing(null);
+                            }}
+                            style={{
+                              padding: "3px 10px",
+                              border:
+                                empShifts[editing.dayIdx] === st.code
+                                  ? "2px solid #1e3a5f"
+                                  : "1px solid transparent",
+                              borderRadius: 4,
+                              background: st.bg,
+                              color: st.fg,
+                              fontSize: 12,
+                              fontWeight: 700,
+                              cursor: "pointer",
+                              fontFamily: "inherit",
+                            }}
+                          >
+                            {st.code}　{st.name}
+                          </button>
+                        ))}
+                        {/* 清除按鈕 */}
+                        <button
+                          onClick={() => {
+                            onUpdate(emp.id, editing.dayIdx, "-");
+                            setEditing(null);
+                          }}
+                          style={{
+                            padding: "3px 10px",
+                            border: "1px solid #d1d5db",
+                            borderRadius: 4,
+                            background: "#f9fafb",
+                            color: "#6b7280",
+                            fontSize: 12,
+                            cursor: "pointer",
+                            fontFamily: "inherit",
+                          }}
+                        >
+                          清除
+                        </button>
+                        {/* 取消按鈕 */}
+                        <button
+                          onClick={() => setEditing(null)}
+                          style={{
+                            padding: "3px 10px",
+                            border: "1px solid #d1d5db",
+                            borderRadius: 4,
+                            background: "#fff",
+                            color: "#9ca3af",
+                            fontSize: 12,
+                            cursor: "pointer",
+                            fontFamily: "inherit",
+                          }}
+                        >
+                          取消
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              }
+
+              return rows;
+            })}
+          </tbody>
+
+          {/* ── 每日統計列 ── */}
+          <tfoot>
+            <tr
+              style={{
+                borderTop: "2px solid #d1d5db",
+                background: "#f3f4f6",
+              }}
+            >
+              <td
+                style={{
+                  padding: "4px 10px",
+                  fontWeight: 500,
+                  fontSize: 11,
+                  color: "#6b7280",
+                  position: "sticky",
+                  left: 0,
+                  background: "#f3f4f6",
+                  borderRight: "1px solid #e5e7eb",
+                  zIndex: 1,
+                }}
+              >
+                每日人數
+              </td>
+              {dayArr.map((di) => {
+                const stats = dayStat(di);
+                return (
+                  <td
+                    key={di}
+                    style={{
+                      padding: "1px",
+                      textAlign: "center",
+                      fontSize: 9,
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    {["D", "E", "N"]
+                      .filter((c) => stats[c] > 0)
+                      .map((c) => {
+                        const st = findSt(c);
+                        // 白色文字的班（如大夜）改用背景色顯示數字
+                        const col =
+                          st.fg === "#ffffff" ? st.bg : st.fg;
+                        return (
+                          <div
+                            key={c}
+                            style={{ fontWeight: 700, color: col }}
+                          >
+                            {stats[c]}
+                          </div>
+                        );
+                      })}
+                  </td>
+                );
+              })}
+              <td />
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════
+// 六、員工管理頁籤元件
+// ═══════════════════════════════════════
+
+function EmployeeTab({ employees, onChange }) {
+  const blank = { id: "", name: "", email: "", license: "", startDate: "" };
+  const [form, setForm] = useState(blank);
+  const [editId, setEditId] = useState(null); // 目前正在編輯的員工 id
+  const [message, setMessage] = useState(null); // [是否成功, 訊息文字]
+
+  const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
+  const reset = () => {
+    setForm(blank);
+    setEditId(null);
+  };
+
+  /** 儲存（新增或更新） */
+  const save = () => {
+    if (!form.id || !form.name) {
+      setMessage([false, "員工編號和姓名為必填"]);
+      return;
+    }
+    if (!editId && employees.find((e) => e.id === form.id)) {
+      setMessage([false, `員工編號 ${form.id} 已存在`]);
+      return;
+    }
+    onChange(
+      editId
+        ? employees.map((e) => (e.id === editId ? { ...form } : e))
+        : [...employees, { ...form }]
+    );
+    setMessage([true, `員工 ${form.name} 已${editId ? "更新" : "新增"}`]);
+    reset();
+  };
+
+  /** 刪除員工 */
+  const del = (e) => {
+    if (!confirm(`確定刪除員工 ${e.name}（${e.id}）？`)) return;
+    onChange(employees.filter((x) => x.id !== e.id));
+    setMessage([true, `員工 ${e.name} 已刪除`]);
+  };
+
+  // 欄位定義
+  const FIELDS = [
+    { k: "id",        label: "員工編號 *", ph: "N0960",            dis: !!editId },
+    { k: "name",      label: "員工姓名 *", ph: "吳玉柱" },
+    { k: "email",     label: "E-Mail",     ph: "xxx@gmail.com" },
+    { k: "license",   label: "證照",       ph: "照顧服務員單一級" },
+    { k: "startDate", label: "入職日期",   ph: "2012-08-19", type: "date" },
+  ];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* ── 新增/編輯表單 ── */}
+      <div style={card}>
+        <h3
+          style={{
+            margin: "0 0 14px",
+            fontSize: 15,
+            fontWeight: 500,
+            color: "#1f2937",
+          }}
+        >
+          {editId ? "編輯員工" : "新增員工"}
+        </h3>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(165px, 1fr))",
+            gap: 12,
+          }}
+        >
+          {FIELDS.map((f) => (
+            <div key={f.k}>
+              <label style={lbl}>{f.label}</label>
+              <input
+                type={f.type || "text"}
+                value={form[f.k]}
+                placeholder={f.ph}
+                disabled={f.dis}
+                onChange={(e) => set(f.k, e.target.value)}
+                style={inp(f.dis)}
+              />
+            </div>
+          ))}
+        </div>
+        <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
+          <button onClick={save} style={btn("#1b6ca8")}>
+            {editId ? "更新員工" : "新增員工"}
+          </button>
+          {editId && (
+            <button onClick={reset} style={btn("#6b7280")}>
+              取消
+            </button>
+          )}
+        </div>
+        {message && (
+          <div style={msg(message[0])}>
+            {message[0] ? "✓ " : "✗ "}
+            {message[1]}
+          </div>
+        )}
+      </div>
+
+      {/* ── 員工清單 ── */}
+      <div style={card}>
+        <h3
+          style={{
+            margin: "0 0 14px",
+            fontSize: 15,
+            fontWeight: 500,
+            color: "#1f2937",
+          }}
+        >
+          員工清單（{employees.length} 人）
+        </h3>
+        <div style={{ overflowX: "auto" }}>
+          <table
+            style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}
+          >
+            <thead>
+              <tr>
+                {["員工編號", "姓名", "E-Mail", "證照", "入職日期", "操作"].map(
+                  (h) => (
+                    <th
+                      key={h}
+                      style={{
+                        padding: "7px 10px",
+                        textAlign: "left",
+                        borderBottom: "2px solid #e5e7eb",
+                        color: "#6b7280",
+                        fontWeight: 500,
+                        fontSize: 12,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {h}
+                    </th>
+                  )
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {employees.map((e, i) => (
+                <tr
+                  key={e.id}
+                  style={{ borderBottom: "1px solid #f3f4f6" }}
+                >
+                  <td
+                    style={{
+                      padding: "8px 10px",
+                      fontWeight: 500,
+                      color: "#1b6ca8",
+                    }}
+                  >
+                    {e.id}
+                  </td>
+                  <td style={{ padding: "8px 10px", color: "#1f2937" }}>
+                    {e.name}
+                  </td>
+                  <td
+                    style={{
+                      padding: "8px 10px",
+                      color: "#6b7280",
+                      fontSize: 12,
+                    }}
+                  >
+                    {e.email || "—"}
+                  </td>
+                  <td style={{ padding: "8px 10px", color: "#1f2937" }}>
+                    {e.license || "—"}
+                  </td>
+                  <td style={{ padding: "8px 10px", color: "#6b7280" }}>
+                    {e.startDate || "—"}
+                  </td>
+                  <td
+                    style={{ padding: "8px 10px", whiteSpace: "nowrap" }}
+                  >
+                    <button
+                      onClick={() => {
+                        setForm({ ...e });
+                        setEditId(e.id);
+                        setMessage(null);
+                      }}
+                      style={{
+                        ...btn("#f59e0b", "#7c2d12"),
+                        padding: "3px 10px",
+                        fontSize: 11,
+                        marginRight: 6,
+                      }}
+                    >
+                      編輯
+                    </button>
+                    <button
+                      onClick={() => del(e)}
+                      style={{
+                        ...btn("#ef4444"),
+                        padding: "3px 10px",
+                        fontSize: 11,
+                      }}
+                    >
+                      刪除
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════
+// 七、班別設定頁籤元件
+// ═══════════════════════════════════════
+
+function ShiftTypeTab({ shiftDefs, onChange }) {
+  const blank = { code: "", name: "", fg: "#1e3a5f", bg: "#90CAF9" };
+  const [form, setForm] = useState(blank);
+  const [editCode, setEditCode] = useState(null);
+  const [message, setMessage] = useState(null);
+
+  const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
+  const reset = () => {
+    setForm(blank);
+    setEditCode(null);
+  };
+
+  const save = () => {
+    if (!form.code || !form.name) {
+      setMessage([false, "代號和名稱為必填"]);
+      return;
+    }
+    if (!editCode && shiftDefs.find((s) => s.code === form.code)) {
+      setMessage([false, `班別代號 ${form.code} 已存在`]);
+      return;
+    }
+    onChange(
+      editCode
+        ? shiftDefs.map((s) => (s.code === editCode ? { ...form } : s))
+        : [...shiftDefs, { ...form }]
+    );
+    setMessage([
+      true,
+      `班別 ${form.code}（${form.name}）已${editCode ? "更新" : "新增"}`,
+    ]);
+    reset();
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* ── 新增/編輯班別 ── */}
+      <div style={card}>
+        <h3
+          style={{
+            margin: "0 0 14px",
+            fontSize: 15,
+            fontWeight: 500,
+            color: "#1f2937",
+          }}
+        >
+          {editCode ? "編輯班別" : "新增班別"}
+        </h3>
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 14,
+            alignItems: "flex-end",
+          }}
+        >
+          {/* 代號 */}
+          <div>
+            <label style={lbl}>班別代號 *</label>
+            <input
+              value={form.code}
+              placeholder="D"
+              disabled={!!editCode}
+              onChange={(e) => set("code", e.target.value.toUpperCase())}
+              style={{ ...inp(!!editCode), width: 80 }}
+            />
+          </div>
+          {/* 名稱 */}
+          <div>
+            <label style={lbl}>班別名稱 *</label>
+            <input
+              value={form.name}
+              placeholder="白班"
+              onChange={(e) => set("name", e.target.value)}
+              style={{ ...inp(), width: 100 }}
+            />
+          </div>
+          {/* 文字顏色 */}
+          <div>
+            <label style={lbl}>文字顏色</label>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <input
+                type="color"
+                value={form.fg}
+                onChange={(e) => set("fg", e.target.value)}
+                style={{
+                  width: 38,
+                  height: 34,
+                  padding: 2,
+                  border: "1px solid #d1d5db",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                }}
+              />
+              <span
+                style={{
+                  fontSize: 11,
+                  color: "#9ca3af",
+                  fontFamily: "monospace",
+                }}
+              >
+                {form.fg}
+              </span>
+            </div>
+          </div>
+          {/* 背景顏色 */}
+          <div>
+            <label style={lbl}>背景顏色</label>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <input
+                type="color"
+                value={form.bg}
+                onChange={(e) => set("bg", e.target.value)}
+                style={{
+                  width: 38,
+                  height: 34,
+                  padding: 2,
+                  border: "1px solid #d1d5db",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                }}
+              />
+              <span
+                style={{
+                  fontSize: 11,
+                  color: "#9ca3af",
+                  fontFamily: "monospace",
+                }}
+              >
+                {form.bg}
+              </span>
+            </div>
+          </div>
+          {/* 預覽 */}
+          <div>
+            <label style={lbl}>預覽效果</label>
+            <span
+              style={{
+                padding: "5px 16px",
+                borderRadius: 4,
+                fontWeight: 700,
+                fontSize: 15,
+                color: form.fg,
+                background: form.bg,
+                border: "1px solid #e5e7eb",
+              }}
+            >
+              {form.code || "?"} {form.name || "—"}
+            </span>
+          </div>
+          <button onClick={save} style={btn("#1b6ca8")}>
+            {editCode ? "更新" : "新增"}
+          </button>
+          {editCode && (
+            <button onClick={reset} style={btn("#6b7280")}>
+              取消
+            </button>
+          )}
+        </div>
+        {message && (
+          <div style={msg(message[0])}>
+            {message[0] ? "✓ " : "✗ "}
+            {message[1]}
+          </div>
+        )}
+      </div>
+
+      {/* ── 班別清單 ── */}
+      <div style={card}>
+        <h3
+          style={{
+            margin: "0 0 14px",
+            fontSize: 15,
+            fontWeight: 500,
+            color: "#1f2937",
+          }}
+        >
+          班別清單
+        </h3>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+          {shiftDefs.map((st) => (
+            <div
+              key={st.code}
+              style={{
+                border: "1px solid #e5e7eb",
+                borderRadius: 12,
+                padding: 14,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: 8,
+                minWidth: 96,
+                background: "#f9fafb",
+              }}
+            >
+              {/* 班別徽章 */}
+              <div
+                style={{
+                  padding: "6px 20px",
+                  borderRadius: 4,
+                  fontWeight: 700,
+                  fontSize: 18,
+                  color: st.fg,
+                  background: st.bg,
+                  textAlign: "center",
+                }}
+              >
+                {st.code}
+              </div>
+              <div style={{ fontSize: 12, color: "#6b7280" }}>{st.name}</div>
+              <div style={{ display: "flex", gap: 5 }}>
+                <button
+                  onClick={() => {
+                    setForm({ ...st });
+                    setEditCode(st.code);
+                    setMessage(null);
+                  }}
+                  style={{
+                    ...btn("#f59e0b", "#7c2d12"),
+                    padding: "2px 8px",
+                    fontSize: 11,
+                  }}
+                >
+                  編輯
+                </button>
+                <button
+                  onClick={() => {
+                    if (!confirm(`確定刪除班別 ${st.code}（${st.name}）？`))
+                      return;
+                    onChange(shiftDefs.filter((s) => s.code !== st.code));
+                  }}
+                  style={{
+                    ...btn("#ef4444"),
+                    padding: "2px 8px",
+                    fontSize: 11,
+                  }}
+                >
+                  刪除
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+    </div>
+  );
+}
+
+
+// ═══════════════════════════════════════
+// 八之一、PDF 轉入元件
+// ═══════════════════════════════════════
+
+/**
+ * PdfImportSection：PDF 班表轉入
+ * 流程：上傳 PDF → 解析文字 → 預覽確認 → 寫入班表
+ * 使用 PDF.js 提取文字，再用正則式辨識年月與班別
+ */
+function PdfImportSection({ employees, schedules, onAddSchedule }) {
+  // phase: idle | parsing | preview | confirmed | done | error
+  const [phase, setPhase]         = useState("idle");
+  const [preview, setPreview]     = useState(null); // { year, month, empMap, days }
+  const [errMsg, setErrMsg]       = useState("");
+  const [showPaste, setShowPaste] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+
+  // ── 標準化班別代號 ──
+  // 去掉前綴數字（"3D"→"D"）、取斜線前段（"D/W"→"D", "E/學"→"E"）
+  const norm = (raw) => {
+    if (!raw) return null;
+    const stripped = raw.replace(/^\d+/, "");
+    const base = stripped.split("/")[0].toUpperCase();
+    if (base === "OFF") return "OFF";
+    if (["D", "E", "N", "S"].includes(base)) return base;
+    return null;
+  };
+
+  // ── 核心解析：文字 → { year, month, empMap, days } ──
+  const parseText = (text) => {
+    // 1. 辨識年月（例："115年5月班表" 或 "115 年 5 月 班表"）
+    const ymMatch = text.match(/(\d{2,3})\s*[年]\s*(\d{1,2})\s*[月]\s*班表/);
+    if (!ymMatch) {
+      throw new Error(
+        "找不到班表年月\n" +
+        "請確認 PDF 包含「XXX年X月班表」文字\n" +
+        "例：115年5月班表 或 115 年 5 月班表"
+      );
+    }
+    const year  = parseInt(ymMatch[1]) + 1911; // 民國年 → 西元年
+    const month = parseInt(ymMatch[2]);
+    const days  = daysInMonth(year, month);
+
+    // 2. 切成 token 陣列
+    const tokens = text.split(/\s+/).filter(Boolean);
+
+    // 3. 逐一找員工 ID（N 或 B 開頭後接 4 位數字）
+    const EMP_RE = /^[NB]\d{4}$/;
+    const empMap = {};
+
+    for (let i = 0; i < tokens.length; i++) {
+      if (!EMP_RE.test(tokens[i])) continue;
+      const empId = tokens[i];
+      if (empMap[empId]) continue; // 已解析過，跳過
+
+      // 從 ID 之後收集班別 token
+      const shifts = [];
+      let j = i + 1;
+      let nonShiftRun = 0;
+
+      while (j < tokens.length && shifts.length < days + 2) {
+        const sh = norm(tokens[j]);
+        if (sh) {
+          shifts.push(sh);
+          nonShiftRun = 0;
+        } else {
+          // 遇到中文字且班別數已足夠 → 進入姓名區，停止
+          if (/[\u4e00-\u9fa5]/.test(tokens[j]) && shifts.length >= days - 2) break;
+          nonShiftRun++;
+          if (nonShiftRun >= 3 && shifts.length > 0) break;
+        }
+        j++;
+      }
+
+      // PDF 第一欄是前月末，若收到的 token 比 days 多一個就跳過第一個
+      if (shifts.length >= days + 1) {
+        empMap[empId] = shifts.slice(1, days + 1);
+      } else if (shifts.length >= days) {
+        empMap[empId] = shifts.slice(0, days);
+      }
+      i = j - 1;
+    }
+
+    if (Object.keys(empMap).length === 0) {
+      throw new Error(
+        "無法辨識任何員工班別\n" +
+        "可能原因：\n" +
+        "・PDF 版面複雜，文字順序錯亂\n" +
+        "・請改用「文字貼上」方式（在 PDF 閱讀器按 Ctrl+A 全選後複製）"
+      );
+    }
+
+    return { year, month, empMap, days };
+  };
+
+  // ── 動態載入 PDF.js ──
+  const loadPdfJs = () =>
+    new Promise((resolve, reject) => {
+      if (window.pdfjsLib) { resolve(); return; }
+      const s = document.createElement("script");
+      s.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+      s.onload = () => {
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+          "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+        resolve();
+      };
+      s.onerror = () => reject(new Error("PDF.js 載入失敗，請檢查網路"));
+      document.head.appendChild(s);
+    });
+
+  // ── 上傳 PDF 檔案 ──
+  const handlePdfFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    setPhase("parsing");
+    setErrMsg("");
+    try {
+      await loadPdfJs();
+      const buf = await file.arrayBuffer();
+      const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+      let fullText = "";
+      for (let p = 1; p <= pdf.numPages; p++) {
+        const page = await pdf.getPage(p);
+        const tc   = await page.getTextContent();
+        // 依 y 由上到下、x 由左到右排序
+        const items = tc.items.sort((a, b) => {
+          const dy = Math.round(b.transform[5] - a.transform[5]);
+          return dy !== 0 ? dy : a.transform[4] - b.transform[4];
+        });
+        fullText += items.map((it) => it.str).join(" ") + "\n";
+      }
+      const result = parseText(fullText);
+      setPreview(result);
+      setPhase("preview");
+    } catch (err) {
+      setErrMsg(err.message);
+      setPhase("error");
+    }
+  };
+
+  // ── 解析貼上的文字 ──
+  const handlePasteImport = () => {
+    setErrMsg("");
+    try {
+      const result = parseText(pasteText);
+      setPreview(result);
+      setPhase("preview");
+    } catch (err) {
+      setErrMsg(err.message);
+      setPhase("error");
+    }
+  };
+
+  // ── 確認轉入（含覆蓋判斷）──
+  const confirmImport = () => {
+    const { year, month, empMap, days } = preview;
+    const k = monthKey(year, month);
+
+    // 判斷是否已有舊資料
+    const hasOldData = !!schedules[k];
+    if (hasOldData) {
+      // 有舊資料 → 強制詢問是否覆蓋
+      const rocY = year - 1911;
+      const ok = window.confirm(
+        "【覆蓋確認】\n\n" +
+        "民國 " + rocY + " 年 " + month + " 月（西元 " + year + " 年）\n" +
+        "已有班表資料存在。\n\n" +
+        "確定要刪除舊資料並匯入新的 PDF 班表嗎？\n" +
+        "（此操作無法復原）"
+      );
+      if (!ok) return; // 取消 → 留在 preview 繼續等待
+    }
+
+    // 建立完整員工班表（PDF 中沒出現的員工填空）
+    const fullMap = {};
+    employees.forEach((emp) => {
+      fullMap[emp.id] = empMap[emp.id] || Array(days).fill("-");
+    });
+
+    // 呼叫父層：先清除舊資料再寫入（由 onAddSchedule 內部處理）
+    onAddSchedule(year, month, fullMap, hasOldData);
+    setPhase("done");
+    setPreview(null);
+    setPasteText("");
+  };
+
+  // ── 輔助：查員工姓名 ──
+  const empName = (id) => employees.find((e) => e.id === id)?.name || id;
+
+  // ── 已解析月份是否已有資料 ──
+  const previewHasOld = preview ? !!schedules[monthKey(preview.year, preview.month)] : false;
+
+  return (
+    <div style={{
+      background: "#faf5ff",
+      border: "2px solid #a78bfa",
+      borderRadius: 12,
+      padding: 20,
+    }}>
+      {/* 標題列 */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+        <span style={{
+          background: "#7c3aed", color: "#fff",
+          borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 700,
+        }}>PDF 轉入</span>
+        <h3 style={{ margin: 0, fontSize: 15, fontWeight: 500, color: "#4c1d95" }}>
+          PDF 班表匯入
+        </h3>
+      </div>
+      <p style={{ margin: "0 0 14px", fontSize: 13, color: "#6d28d9", lineHeight: 1.6 }}>
+        上傳班表 PDF，系統自動辨識年月與班別，預覽確認後再寫入。
+        若該月份已有資料，將詢問是否覆蓋。
+      </p>
+
+      {/* ── idle / error：上傳區 ── */}
+      {(phase === "idle" || phase === "error") && (
+        <div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+            {/* 主要按鈕：上傳 PDF */}
+            <label style={{
+              background: "#7c3aed", color: "#fff",
+              padding: "9px 18px", borderRadius: 6,
+              cursor: "pointer", display: "inline-block",
+              fontSize: 14, fontWeight: 500, fontFamily: "inherit",
+            }}>
+              上傳 PDF 班表
+              <input
+                type="file"
+                accept=".pdf,application/pdf"
+                onChange={handlePdfFile}
+                style={{ display: "none" }}
+              />
+            </label>
+
+            {/* 備用：文字貼上 */}
+            <button
+              onClick={() => setShowPaste((v) => !v)}
+              style={{
+                padding: "9px 14px", background: "transparent",
+                color: "#7c3aed", border: "1px solid #a78bfa",
+                borderRadius: 6, cursor: "pointer",
+                fontSize: 13, fontFamily: "inherit",
+              }}
+            >
+              {showPaste ? "收起文字貼上" : "改用文字貼上（備用）"}
+            </button>
+          </div>
+
+          {/* 文字貼上展開區 */}
+          {showPaste && (
+            <div style={{
+              background: "#fff", border: "1px solid #c4b5fd",
+              borderRadius: 8, padding: 14, marginBottom: 10,
+            }}>
+              <p style={{ margin: "0 0 8px", fontSize: 12, color: "#6b7280" }}>
+                在 PDF 閱讀器中按 Ctrl+A 全選 → Ctrl+C 複製，再貼到下方：
+              </p>
+              <textarea
+                value={pasteText}
+                onChange={(e) => setPasteText(e.target.value)}
+                placeholder={"貼上從 PDF 複製的文字...\n\n例：115年5月班表\nN0935 陳志偉 3D OFF D D D OFF..."}
+                style={{
+                  width: "100%", height: 130, padding: "8px 10px",
+                  border: "1px solid #c4b5fd", borderRadius: 6,
+                  fontSize: 12, fontFamily: "monospace",
+                  boxSizing: "border-box", resize: "vertical", background: "#fff",
+                }}
+              />
+              <button
+                onClick={handlePasteImport}
+                disabled={!pasteText.trim()}
+                style={{
+                  marginTop: 8,
+                  padding: "7px 16px",
+                  background: pasteText.trim() ? "#7c3aed" : "#9ca3af",
+                  color: "#fff", border: "none", borderRadius: 6,
+                  cursor: pasteText.trim() ? "pointer" : "not-allowed",
+                  fontSize: 13, fontFamily: "inherit",
+                }}
+              >
+                解析文字
+              </button>
+            </div>
+          )}
+
+          {/* 錯誤訊息 */}
+          {phase === "error" && (
+            <div style={{
+              padding: "10px 14px", background: "#fef2f2",
+              border: "1px solid #fecaca", borderRadius: 6,
+              fontSize: 13, color: "#b91c1c", whiteSpace: "pre-line",
+              lineHeight: 1.7,
+            }}>
+              ✗ {errMsg}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── parsing：解析中 ── */}
+      {phase === "parsing" && (
+        <div style={{
+          padding: "24px 0", textAlign: "center",
+          color: "#7c3aed", fontSize: 14,
+        }}>
+          <div style={{ fontSize: 28, marginBottom: 8 }}>⏳</div>
+          解析 PDF 中，請稍候...
+        </div>
+      )}
+
+      {/* ── preview：預覽確認 ── */}
+      {phase === "preview" && preview && (
+        <div>
+          {/* 辨識結果摘要 */}
+          <div style={{
+            display: "flex", flexWrap: "wrap", gap: 16,
+            background: "#ede9fe", borderRadius: 8,
+            padding: "10px 16px", marginBottom: 12,
+            alignItems: "center",
+          }}>
+            <div>
+              <div style={{ fontSize: 11, color: "#7c3aed" }}>辨識月份</div>
+              <div style={{ fontSize: 17, fontWeight: 700, color: "#4c1d95" }}>
+                民國 {preview.year - 1911} 年 {preview.month} 月
+              </div>
+              <div style={{ fontSize: 11, color: "#8b5cf6" }}>西元 {preview.year} 年</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: "#7c3aed" }}>辨識員工數</div>
+              <div style={{ fontSize: 17, fontWeight: 700, color: "#4c1d95" }}>
+                {Object.keys(preview.empMap).length} 人
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: "#7c3aed" }}>月份天數</div>
+              <div style={{ fontSize: 17, fontWeight: 700, color: "#4c1d95" }}>
+                {preview.days} 天
+              </div>
+            </div>
+
+            {/* 舊資料警示 */}
+            {previewHasOld && (
+              <div style={{
+                padding: "8px 14px", background: "#fef3c7",
+                border: "1px solid #fcd34d", borderRadius: 6,
+                fontSize: 13, color: "#92400e", fontWeight: 500,
+                lineHeight: 1.5,
+              }}>
+                ⚠ 此月份已有班表資料<br/>
+                <span style={{ fontSize: 11, fontWeight: 400 }}>
+                  按「確認轉入」後將詢問是否覆蓋
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* 班別預覽表格 */}
+          <div style={{
+            overflowX: "auto", marginBottom: 14,
+            border: "1px solid #ddd6fe", borderRadius: 8,
+          }}>
+            <table style={{ borderCollapse: "collapse", fontSize: 11, width: "100%" }}>
+              <thead>
+                <tr style={{ background: "#ede9fe" }}>
+                  <th style={{
+                    padding: "5px 10px", textAlign: "left",
+                    color: "#4c1d95", minWidth: 100,
+                  }}>員工</th>
+                  {Array.from({ length: preview.days }, (_, i) => {
+                    const dow = new Date(preview.year, preview.month - 1, i + 1).getDay();
+                    return (
+                      <th key={i} style={{
+                        padding: "3px 1px", textAlign: "center",
+                        color: dow === 0 ? "#b91c1c" : dow === 6 ? "#1d4ed8" : "#4c1d95",
+                        fontSize: 10, width: 24,
+                      }}>
+                        {i + 1}
+                      </th>
+                    );
+                  })}
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(preview.empMap).map(([id, shifts], ri) => (
+                  <tr key={id} style={{
+                    background: ri % 2 === 0 ? "#fff" : "#faf5ff",
+                    borderBottom: "1px solid #ede9fe",
+                  }}>
+                    <td style={{
+                      padding: "4px 10px", whiteSpace: "nowrap",
+                      color: "#4c1d95", fontWeight: 500,
+                    }}>
+                      {empName(id)}{" "}
+                      <span style={{ color: "#a78bfa", fontWeight: 400, fontSize: 10 }}>
+                        {id}
+                      </span>
+                    </td>
+                    {shifts.map((sh, di) => {
+                      const bgMap = { D: "#90CAF9", E: "#FED7AA", N: "#3949AB", OFF: "#E5E7EB" };
+                      const fgMap = { D: "#1e3a5f", E: "#7c2d12", N: "#fff", OFF: "#6b7280" };
+                      return (
+                        <td key={di} style={{ padding: "2px 1px", textAlign: "center" }}>
+                          <span style={{
+                            display: "inline-block", width: 22, height: 18,
+                            borderRadius: 2, lineHeight: "18px",
+                            background: bgMap[sh] || "transparent",
+                            color: fgMap[sh] || "#ccc",
+                            fontSize: 8, fontWeight: 700, textAlign: "center",
+                          }}>
+                            {sh === "-" ? "" : sh}
+                          </span>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* 操作按鈕 */}
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <button onClick={confirmImport} style={{
+              padding: "9px 20px", background: "#16a34a",
+              color: "#fff", border: "none", borderRadius: 6,
+              cursor: "pointer", fontSize: 14, fontWeight: 500,
+              fontFamily: "inherit",
+            }}>
+              確認轉入{previewHasOld ? "（將詢問覆蓋）" : ""}
+            </button>
+            <button
+              onClick={() => { setPhase("idle"); setPreview(null); }}
+              style={{
+                padding: "9px 16px", background: "#fff",
+                color: "#6b7280", border: "1px solid #d1d5db",
+                borderRadius: 6, cursor: "pointer",
+                fontSize: 13, fontFamily: "inherit",
+              }}
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── done：完成 ── */}
+      {phase === "done" && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{
+            flex: 1, padding: "10px 16px",
+            background: "#f0fdf4", border: "1px solid #bbf7d0",
+            borderRadius: 6, fontSize: 13, color: "#15803d",
+          }}>
+            ✓ 班表已成功轉入！已自動切換到該月班表頁籤。
+          </div>
+          <button
+            onClick={() => { setPhase("idle"); setErrMsg(""); }}
+            style={{
+              padding: "9px 14px", background: "#7c3aed",
+              color: "#fff", border: "none", borderRadius: 6,
+              cursor: "pointer", fontSize: 13, fontFamily: "inherit",
+              whiteSpace: "nowrap",
+            }}
+          >
+            再轉入一份
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DataTab({ employees, shiftDefs, schedules, onImport, onAddSchedule }) {
+  const [message, setMessage] = useState(null);
+
+  /** 匯出 XML 並下載 */
+  const exportXml = () => {
+    const xml = serializeToXml({ employees, shiftDefs, schedules });
+    const blob = new Blob([xml], { type: "application/xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const d = new Date();
+    a.href = url;
+    a.download = `班表_${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}.xml`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setMessage([true, "XML 檔案已匯出下載"]);
+  };
+
+  /** 匯入 XML 檔案 */
+  const importXml = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = ""; // 重置，方便重複選檔
+
+    const fr = new FileReader();
+    fr.onload = (ev) => {
+      try {
+        const data = parseFromXml(ev.target.result);
+        if (!data.employees.length) {
+          setMessage([false, "XML 內無員工資料"]);
+          return;
+        }
+        // 檢查是否有重疊月份
+        const overlap = Object.keys(data.schedules).filter(
+          (k) => schedules[k]
+        );
+        if (overlap.length) {
+          const labels = overlap
+            .map((k) => {
+              const [y, m] = k.split("-");
+              return `民國 ${toROC(+y)} 年 ${m} 月`;
+            })
+            .join("、");
+          if (!confirm(`以下月份已有資料：${labels}\n確定要覆蓋嗎？`)) return;
+        }
+        onImport(data);
+        setMessage([true, "XML 資料匯入成功"]);
+      } catch (err) {
+        setMessage([false, "匯入失敗：" + err.message]);
+      }
+    };
+    fr.readAsText(file, "UTF-8");
+  };
+
+  // 統計數字
+  const months = Object.keys(schedules).sort();
+  const totalRec = Object.values(schedules).reduce(
+    (s, em) =>
+      s +
+      Object.values(em).reduce(
+        (s2, sh) => s2 + sh.filter((x) => x && x !== "-").length,
+        0
+      ),
+    0
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* ── PDF 班表轉入（最優先，置頂）── */}
+      <PdfImportSection
+        employees={employees}
+        schedules={schedules}
+        onAddSchedule={onAddSchedule}
+      />
+
+      {/* ── XML 備份 ── */}
+      <div style={card}>
+        <h3
+          style={{
+            margin: "0 0 10px",
+            fontSize: 15,
+            fontWeight: 500,
+            color: "#1f2937",
+          }}
+        >
+          XML 備份與還原
+        </h3>
+        <p
+          style={{
+            margin: "0 0 14px",
+            fontSize: 13,
+            color: "#6b7280",
+            lineHeight: 1.6,
+          }}
+        >
+          所有班表、員工、班別設定皆以 XML 格式儲存。
+          建議定期匯出並上傳至 Google Drive 備份。
+        </p>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button onClick={exportXml} style={btn("#16a34a")}>
+            匯出 XML
+          </button>
+          <label
+            style={{
+              ...btn("#4f46e5"),
+              cursor: "pointer",
+              display: "inline-block",
+            }}
+          >
+            匯入 XML
+            <input
+              type="file"
+              accept=".xml,application/xml"
+              onChange={importXml}
+              style={{ display: "none" }}
+            />
+          </label>
+          <a
+            href="https://drive.google.com/drive/folders/1KaFaTW_YDupDZ2JpMuxHMu77fBVgXv2d"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              ...btn("#1a73e8"),
+              textDecoration: "none",
+              display: "inline-block",
+            }}
+          >
+            Google Drive 備份資料夾
+          </a>
+        </div>
+        {message && (
+          <div style={msg(message[0])}>
+            {message[0] ? "✓ " : "✗ "}
+            {message[1]}
+          </div>
+        )}
+      </div>
+
+      {/* ── 資料摘要 ── */}
+      <div style={card}>
+        <h3
+          style={{
+            margin: "0 0 14px",
+            fontSize: 15,
+            fontWeight: 500,
+            color: "#1f2937",
+          }}
+        >
+          資料摘要
+        </h3>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))",
+            gap: 12,
+          }}
+        >
+          {[
+            ["員工人數", employees.length + " 人"],
+            ["班別種類", shiftDefs.length + " 種"],
+            ["班表月份", months.length + " 個月"],
+            ["班表記錄", totalRec + " 筆"],
+          ].map(([label, value]) => (
+            <div
+              key={label}
+              style={{
+                textAlign: "center",
+                padding: 14,
+                background: "#f0f9ff",
+                borderRadius: 8,
+                border: "1px solid #bae6fd",
+              }}
+            >
+              <div
+                style={{ fontSize: 22, fontWeight: 500, color: "#1b6ca8" }}
+              >
+                {value}
+              </div>
+              <div
+                style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}
+              >
+                {label}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── 已儲存月份清單 ── */}
+      {months.length > 0 && (
+        <div style={card}>
+          <h3
+            style={{
+              margin: "0 0 12px",
+              fontSize: 15,
+              fontWeight: 500,
+              color: "#1f2937",
+            }}
+          >
+            已儲存的班表月份
+          </h3>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {months.map((k) => {
+              const [y, m] = k.split("-");
+              return (
+                <span
+                  key={k}
+                  style={{
+                    padding: "4px 14px",
+                    background: "#eff6ff",
+                    color: "#1d4ed8",
+                    borderRadius: 20,
+                    fontSize: 13,
+                    fontWeight: 500,
+                    border: "1px solid #bfdbfe",
+                  }}
+                >
+                  民國 {toROC(+y)} 年 {m} 月（西元 {y} 年）
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── 操作說明 ── */}
+      <div
+        style={{
+          ...card,
+          background: "#fffbeb",
+          border: "1px solid #fde68a",
+        }}
+      >
+        <h4
+          style={{
+            margin: "0 0 8px",
+            fontSize: 13,
+            fontWeight: 500,
+            color: "#92400e",
+          }}
+        >
+          操作說明
+        </h4>
+        <ul
+          style={{
+            margin: 0,
+            paddingLeft: 16,
+            fontSize: 12,
+            color: "#92400e",
+            lineHeight: 1.9,
+          }}
+        >
+          <li>資料自動儲存於瀏覽器，重新開啟後仍保留</li>
+          <li>建議每月定期匯出 XML，再上傳至 Google Drive</li>
+          <li>匯入 XML 時若有重複月份，系統會詢問是否覆蓋</li>
+          <li>
+            民國年換算：民國 115 年 = 西元 2026 年（115 + 1911 = 2026）
+          </li>
+        </ul>
+      </div>
+
+    </div>
+  );
+}
+
+
+// ═══════════════════════════════════════
+// 九、手機版班表元件（月曆式 + 員工選擇）
+// ═══════════════════════════════════════
+
+/**
+ * MobileScheduleTab：手機版月曆班表
+ * - 上方下拉選擇員工
+ * - 月曆格子顯示班別（7欄：日一二三四五六）
+ * - 點格子可修改班別
+ * - 底部顯示當月出勤統計
+ */
+function MobileScheduleTab({ employees, shiftDefs, schedule, year, month, onUpdate }) {
+  // 預設選第一位員工
+  const [selEmpId, setSelEmpId] = useState(employees[0]?.id || "");
+  const [editing, setEditing]   = useState(null); // dayIdx
+
+  const days     = daysInMonth(year, month);
+  const firstDow = new Date(year, month - 1, 1).getDay(); // 1日是星期幾（0=日）
+  const emp      = employees.find((e) => e.id === selEmpId) || employees[0];
+  const empShifts = emp ? (schedule[emp.id] || Array(days).fill("-")) : [];
+
+  /** 查找班別定義 */
+  const findSt = (code) =>
+    shiftDefs.find((s) => s.code === code) || {
+      code, fg: "#9ca3af", bg: "#f3f4f6", name: code,
+    };
+
+  /** 當月統計 */
+  const cnt = { D: 0, E: 0, N: 0, OFF: 0 };
+  empShifts.forEach((s) => { if (cnt[s] !== undefined) cnt[s]++; });
+
+  // 補全月曆前面的空格（上個月的日期）
+  const blanks = Array(firstDow).fill(null);
+  // 每格資料 [day, shift] 或 null（空格）
+  const cells  = [
+    ...blanks,
+    ...Array.from({ length: days }, (_, i) => i),
+  ];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+
+      {/* ── 操作說明 ── */}
+      <div style={{
+        background: "#eff6ff", border: "1px solid #bfdbfe",
+        borderRadius: 8, padding: "10px 14px",
+        fontSize: 12, color: "#1d4ed8", lineHeight: 1.8,
+      }}>
+        <strong>如何修改班別：</strong><br/>
+        ① 下方選擇員工　② 點擊月曆格子　③ 選擇新班別
+      </div>
+
+      {/* ── 員工選擇器 ── */}
+      <div style={{ ...card, padding: "12px 16px" }}>
+        <label style={{ ...lbl, marginBottom: 6 }}>選擇員工</label>
+        <select
+          value={selEmpId}
+          onChange={(e) => { setSelEmpId(e.target.value); setEditing(null); }}
+          style={{
+            width: "100%", padding: "9px 12px", borderRadius: 8,
+            border: "1px solid #d1d5db", fontSize: 15,
+            background: "#fff", color: "#1f2937",
+            fontFamily: "inherit", appearance: "auto",
+          }}
+        >
+          {employees.map((e) => (
+            <option key={e.id} value={e.id}>
+              {e.name}　{e.id}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* ── 月曆格子 ── */}
+      <div style={card}>
+        {/* 星期標頭 */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 3, marginBottom: 4 }}>
+          {WEEKDAY.map((w, i) => (
+            <div
+              key={w}
+              style={{
+                textAlign: "center", fontSize: 12, fontWeight: 500, padding: "4px 0",
+                color: i === 0 ? "#b91c1c" : i === 6 ? "#1d4ed8" : "#6b7280",
+              }}
+            >
+              {w}
+            </div>
+          ))}
+        </div>
+
+        {/* 日期格子 */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 3 }}>
+          {cells.map((di, ci) => {
+            if (di === null) {
+              // 空白格（補前月日期）
+              return <div key={`blank-${ci}`} style={{ height: 52 }} />;
+            }
+            const d   = di + 1;
+            const sh  = empShifts[di] || "-";
+            const st  = findSt(sh);
+            const dow = new Date(year, month - 1, d).getDay();
+            const isWeekend = dow === 0 || dow === 6;
+            const isEditing = editing === di;
+            const today = new Date();
+            const isToday =
+              today.getFullYear() === year &&
+              today.getMonth() + 1 === month &&
+              today.getDate() === d;
+
+            return (
+              <div
+                key={di}
+                style={{
+                  borderRadius: 8,
+                  border: isToday ? "2px solid #1b6ca8" : "1px solid #e5e7eb",
+                  background: isEditing ? "#dbeafe" : isWeekend ? "#fffbeb" : "#fff",
+                  overflow: "hidden",
+                  cursor: "pointer",
+                }}
+                title={`點擊修改：${month}/${di+1} 目前班別：${sh === "-" ? "（無）" : sh}`}
+                onClick={() => setEditing(isEditing ? null : di)}
+              >
+                {/* 日期數字 */}
+                <div
+                  style={{
+                    textAlign: "center",
+                    fontSize: 11,
+                    color: dow === 0 ? "#b91c1c" : dow === 6 ? "#1d4ed8" : "#6b7280",
+                    padding: "3px 0 1px",
+                    fontWeight: isToday ? 700 : 400,
+                  }}
+                >
+                  {d}
+                </div>
+                {/* 班別徽章 */}
+                <div
+                  style={{
+                    margin: "0 3px 3px",
+                    borderRadius: 4,
+                    background: sh === "-" ? "transparent" : st.bg,
+                    color: sh === "-" ? "transparent" : st.fg,
+                    textAlign: "center",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    padding: "3px 0",
+                    minHeight: 22,
+                  }}
+                >
+                  {sh === "-" ? "" : sh}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── 班別選擇面板（點格子後出現） ── */}
+      {editing !== null && emp && (
+        <div style={{ ...card, background: "#eff6ff", border: "1px solid #bfdbfe" }}>
+          <div style={{ fontSize: 13, color: "#1d4ed8", fontWeight: 500, marginBottom: 8 }}>
+            {emp.name}・{month}/{editing + 1} 修改班別：
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {shiftDefs.map((st) => (
+              <button
+                key={st.code}
+                onClick={() => { onUpdate(emp.id, editing, st.code); setEditing(null); }}
+                style={{
+                  padding: "8px 14px",
+                  border: empShifts[editing] === st.code ? "2px solid #1e3a5f" : "1px solid transparent",
+                  borderRadius: 6,
+                  background: st.bg, color: st.fg,
+                  fontSize: 14, fontWeight: 700,
+                  cursor: "pointer", fontFamily: "inherit",
+                }}
+              >
+                {st.code}　{st.name}
+              </button>
+            ))}
+            <button
+              onClick={() => { onUpdate(emp.id, editing, "-"); setEditing(null); }}
+              style={{
+                padding: "8px 14px", border: "1px solid #d1d5db", borderRadius: 6,
+                background: "#f9fafb", color: "#6b7280", fontSize: 14,
+                cursor: "pointer", fontFamily: "inherit",
+              }}
+            >
+              清除
+            </button>
+            <button
+              onClick={() => setEditing(null)}
+              style={{
+                padding: "8px 14px", border: "1px solid #d1d5db", borderRadius: 6,
+                background: "#fff", color: "#9ca3af", fontSize: 14,
+                cursor: "pointer", fontFamily: "inherit",
+              }}
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── 當月出勤統計 ── */}
+      <div style={card}>
+        <div style={{ fontSize: 13, color: "#6b7280", marginBottom: 10 }}>
+          {emp?.name} 本月出勤統計
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
+          {[
+            { label: "白班", code: "D", color: "#1d4ed8", bg: "#eff6ff" },
+            { label: "小夜", code: "E", color: "#c2410c", bg: "#fff7ed" },
+            { label: "大夜", code: "N", color: "#4338ca", bg: "#eef2ff" },
+            { label: "例休", code: "OFF", color: "#6b7280", bg: "#f9fafb" },
+          ].map(({ label, code, color, bg }) => (
+            <div
+              key={code}
+              style={{
+                textAlign: "center", padding: "10px 4px",
+                background: bg, borderRadius: 8,
+                border: "1px solid #e5e7eb",
+              }}
+            >
+              <div style={{ fontSize: 22, fontWeight: 700, color }}>{cnt[code]}</div>
+              <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 3 }}>{label}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════
+// 九、主應用程式元件
+// ═══════════════════════════════════════
+
+export default function App() {
+  // 核心狀態
+  const [employees, setEmployees] = useState(DEFAULT_EMPLOYEES);
+  const [shiftDefs, setShiftDefs] = useState(DEFAULT_SHIFT_DEFS);
+  const [schedules, setSchedules] = useState(buildInitialSchedule);
+
+  // UI 狀態
+  const [year, setYear]     = useState(2026);
+  const [month, setMonth]   = useState(4); // 預設顯示最舊的已有月份
+  const [tab, setTab]       = useState("schedule");
+  const [ready, setReady]   = useState(false); // 資料是否載入完成
+  // 版面模式：auto 偵測視窗寬度，可手動覆蓋
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768);
+
+  const key = monthKey(year, month); // 目前月份的資料 key
+
+  // ── 從持久化儲存載入資料 ──
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await window.storage.get("rcw_schedule_v1");
+        if (res?.value) {
+          const d = JSON.parse(res.value);
+          if (d.employees) setEmployees(d.employees);
+          if (d.shiftDefs) setShiftDefs(d.shiftDefs);
+          if (d.schedules) setSchedules(d.schedules);
+        }
+      } catch {
+        // 無儲存資料時使用預設值，靜默忽略錯誤
+      }
+      setReady(true);
+    })();
+  }, []);
+
+  // ── 監聽視窗大小變化，自動切換版面 ──
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  /** 儲存至持久化儲存 */
+  const persist = useCallback(
+    (emp, sd, sch) => {
+      window.storage
+        .set("rcw_schedule_v1", JSON.stringify({ employees: emp, shiftDefs: sd, schedules: sch }))
+        .catch(() => {}); // 靜默忽略儲存錯誤
+    },
+    []
+  );
+
+  // ── 確保切換月份時有空白資料 ──
+  useEffect(() => {
+    if (!ready || schedules[key]) return;
+    const days = daysInMonth(year, month);
+    const empMap = {};
+    employees.forEach((emp) => {
+      empMap[emp.id] = Array(days).fill("-");
+    });
+    setSchedules((prev) => ({ ...prev, [key]: empMap }));
+  }, [key, ready, schedules, employees, year, month]);
+
+  // ── 更新某員工某天的班別 ──
+  const onUpdate = useCallback(
+    (empId, dayIdx, shift) => {
+      setSchedules((prev) => {
+        const empShifts = [
+          ...(prev[key]?.[empId] || Array(daysInMonth(year, month)).fill("-")),
+        ];
+        empShifts[dayIdx] = shift;
+        const updated = {
+          ...prev,
+          [key]: { ...prev[key], [empId]: empShifts },
+        };
+        persist(employees, shiftDefs, updated);
+        return updated;
+      });
+    },
+    [key, year, month, employees, shiftDefs, persist]
+  );
+
+  // ── 員工/班別/完整資料的更新函數 ──
+  const setEmp = useCallback(
+    (e) => { setEmployees(e); persist(e, shiftDefs, schedules); },
+    [shiftDefs, schedules, persist]
+  );
+  const setSd = useCallback(
+    (sd) => { setShiftDefs(sd); persist(employees, sd, schedules); },
+    [employees, schedules, persist]
+  );
+  const onImport = useCallback(
+    (d) => {
+      setEmployees(d.employees);
+      setShiftDefs(d.shiftDefs);
+      setSchedules(d.schedules);
+      persist(d.employees, d.shiftDefs, d.schedules);
+    },
+    [persist]
+  );
+
+  /**
+   * PDF 轉入：新增或覆蓋單一月份班表
+   * @param {number}  yr          西元年
+   * @param {number}  mo          月份
+   * @param {object}  empMap      { empId: string[] }
+   * @param {boolean} wasOverwrite 是否為覆蓋（true 時先刪除舊資料再寫入）
+   */
+  const onAddSchedule = useCallback(
+    (yr, mo, empMap, wasOverwrite = false) => {
+      const k = monthKey(yr, mo);
+      setSchedules((prev) => {
+        // 若為覆蓋，先用解構把舊月份從物件中移除，再寫入新資料
+        // 效果：徹底清空舊班表 → 寫入新班表（而非 merge）
+        const { [k]: _old, ...rest } = prev;
+        const updated = { ...rest, [k]: empMap };
+        persist(employees, shiftDefs, updated);
+        return updated;
+      });
+      // 轉入完成後自動切換到該月班表
+      setYear(yr);
+      setMonth(mo);
+      setTab("schedule");
+    },
+    [employees, shiftDefs, persist]
+  );
+
+  // ── 月份切換 ──
+  const prevMonth = () => {
+    if (month === 1) { setYear((y) => y - 1); setMonth(12); }
+    else setMonth((m) => m - 1);
+  };
+  const nextMonth = () => {
+    if (month === 12) { setYear((y) => y + 1); setMonth(1); }
+    else setMonth((m) => m + 1);
+  };
+
+  // 載入中畫面
+  if (!ready) {
+    return (
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+          height: 200,
+          color: "#9ca3af",
+          fontFamily: '"Noto Sans TC", "Microsoft JhengHei", sans-serif',
+        }}
+      >
+        載入中...
+      </div>
+    );
+  }
+
+  const TABS = [
+    { k: "schedule",   label: "班表" },
+    { k: "employees",  label: "員工管理" },
+    { k: "shifttypes", label: "班別設定" },
+    { k: "data",       label: "資料管理" },
+  ];
+
+  return (
+    <div
+      style={{
+        fontFamily: '"Noto Sans TC", "Microsoft JhengHei", sans-serif',
+        background: "#f3f4f6",
+        minHeight: "100vh",
+      }}
+    >
+      {/* ═══ 標頭 ═══ */}
+      <div
+        style={{
+          background: "linear-gradient(135deg, #0f4c75, #1b6ca8)",
+          color: "#fff",
+          padding: "12px 16px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: 8,
+        }}
+      >
+        {/* 系統標題 */}
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 500, letterSpacing: 0.5 }}>
+            月班表管理系統
+          </div>
+          <div style={{ fontSize: 11, opacity: 0.75, marginTop: 2 }}>
+            呼吸照護病房（RCW）・病房助理
+          </div>
+        </div>
+
+        {/* 右側：版面切換 + 月份導覽 */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          {/* 桌機/手機版切換按鈕 */}
+          <button
+            onClick={() => setIsMobile((v) => !v)}
+            title={isMobile ? "切換桌機版" : "切換手機版"}
+            style={{
+              background: "rgba(255,255,255,0.15)",
+              border: "1px solid rgba(255,255,255,0.4)",
+              color: "#fff",
+              borderRadius: 6,
+              padding: "5px 10px",
+              cursor: "pointer",
+              fontSize: 13,
+              fontFamily: "inherit",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+            }}
+          >
+            {isMobile ? "💻 桌機版" : "📱 手機版"}
+          </button>
+
+          {/* 月份導覽（只在班表頁顯示） */}
+          {tab === "schedule" && (
+          <div
+            style={{ display: "flex", alignItems: "center", gap: 10 }}
+          >
+            <button
+              onClick={prevMonth}
+              style={{
+                background: "rgba(255,255,255,0.2)",
+                border: "none",
+                color: "#fff",
+                borderRadius: 6,
+                padding: "4px 12px",
+                cursor: "pointer",
+                fontSize: 18,
+                lineHeight: 1,
+              }}
+            >
+              ‹
+            </button>
+            <div style={{ textAlign: "center", lineHeight: 1.4 }}>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>
+                民國 {toROC(year)} 年 {month} 月
+              </div>
+              <div style={{ fontSize: 10, opacity: 0.7 }}>
+                西元 {year} 年
+              </div>
+            </div>
+            <button
+              onClick={nextMonth}
+              style={{
+                background: "rgba(255,255,255,0.2)",
+                border: "none",
+                color: "#fff",
+                borderRadius: 6,
+                padding: "4px 12px",
+                cursor: "pointer",
+                fontSize: 18,
+                lineHeight: 1,
+              }}
+            >
+              ›
+            </button>
+          </div>
+        )}
+        </div> {/* 右側: 切換按鈕+月份導覽 */}
+      </div>
+
+      {/* ═══ 分頁導覽列 ═══ */}
+      <div
+        style={{
+          background: "#fff",
+          borderBottom: "1px solid #e5e7eb",
+          display: "flex",
+          overflowX: "auto",
+          paddingLeft: 4,
+        }}
+      >
+        {TABS.map((t) => (
+          <button
+            key={t.k}
+            onClick={() => setTab(t.k)}
+            style={{
+              padding: "10px 16px",
+              border: "none",
+              borderBottom:
+                tab === t.k ? "2px solid #1b6ca8" : "2px solid transparent",
+              background: "none",
+              color: tab === t.k ? "#1b6ca8" : "#6b7280",
+              fontWeight: tab === t.k ? 500 : 400,
+              cursor: "pointer",
+              fontSize: 13,
+              fontFamily: "inherit",
+              whiteSpace: "nowrap",
+              marginBottom: -1,
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ═══ 頁面內容 ═══ */}
+      <div
+        style={{
+          padding: 16,
+          maxWidth: 1200,
+          margin: "0 auto",
+        }}
+      >
+        {tab === "schedule" && (
+          isMobile ? (
+            // 手機版：月曆式 + 員工選擇
+            <MobileScheduleTab
+              employees={employees}
+              shiftDefs={shiftDefs}
+              schedule={schedules[key] || {}}
+              year={year}
+              month={month}
+              onUpdate={onUpdate}
+            />
+          ) : (
+            // 桌機版：橫向全員班表
+            <ScheduleTab
+              employees={employees}
+              shiftDefs={shiftDefs}
+              schedule={schedules[key] || {}}
+              year={year}
+              month={month}
+              onUpdate={onUpdate}
+            />
+          )
+        )}
+        {tab === "employees" && (
+          <EmployeeTab employees={employees} onChange={setEmp} />
+        )}
+        {tab === "shifttypes" && (
+          <ShiftTypeTab shiftDefs={shiftDefs} onChange={setSd} />
+        )}
+        {tab === "data" && (
+          <DataTab
+            employees={employees}
+            shiftDefs={shiftDefs}
+            schedules={schedules}
+            onImport={onImport}
+            onAddSchedule={onAddSchedule}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
